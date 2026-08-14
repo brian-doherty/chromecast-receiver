@@ -1,0 +1,8 @@
+*.wav
+__pycache__/
+*.pyc
+.env
+
+# Local handoff notes - contains the Icecast source password, keep out of the
+# public Pages repo.
+CONTEXT.md

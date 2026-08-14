@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Doherty Cast Receiver</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; color: #eee;
+                 font: 14px/1.5 monospace; }
+    #log { padding: 1rem; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <!-- Audio-only devices have no display; this is only for browser-based debugging. -->
+  <div id="log"></div>
+
+  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+  <script src="https://www.gstatic.com/cast/sdk/libs/devtools/debug_layer/caf_receiver_logger.js"></script>
+  <script>
+  (function () {
+    'use strict';
+
+    // Namespace the sender uses to receive timing reports back from us.
+    var NS = 'urn:x-cast:me.dohertyfamily.cast';
+
+    // 'caf'    - let CAF's player handle the stream, with buffering tuned down.
+    // 'direct' - bypass CAF's media pipeline, drive a raw <audio> element.
+    // Overridable per-request via customData.mode, or per-app via ?mode= in the
+    // registered receiver URL.
+    var DEFAULT_MODE = 'caf';
+
+    var params = new URLSearchParams(location.search);
+    var mode = params.get('mode') || DEFAULT_MODE;
+
+    var context = cast.framework.CastReceiverContext.getInstance();
+    var playerManager = context.getPlayerManager();
+
+    // ---- timing instrumentation -------------------------------------------
+
+    var t0 = null;          // ms timestamp of the LOAD request
+    var marks = [];         // [label, ms-since-t0]
+    var senders = [];
+
+    function elapsed() {
+      return t0 === null ? 0 : Math.round(performance.now() - t0);
+    }
+
+    function mark(label) {
+      var ms = elapsed();
+      // Only record the first occurrence of each label - we care about the
+      // first time playback reached a milestone, not every repeat.
+      if (marks.some(function (m) { return m[0] === label; })) return;
+      marks.push([label, ms]);
+      log(label + ' +' + ms + 'ms');
+      report({ type: 'MARK', label: label, ms: ms });
+    }
+
+    function log(line) {
+      var el = document.getElementById('log');
+      if (el) el.textContent += line + '\n';
+      console.log('[receiver] ' + line);
+    }
+
+    function report(payload) {
+      payload.mode = mode;
+      try {
+        senders.forEach(function (id) { context.sendCustomMessage(NS, id, payload); });
+      } catch (e) { /* no sender attached yet */ }
+    }
+
+    context.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, function (e) {
+      if (senders.indexOf(e.senderId) === -1) senders.push(e.senderId);
+    });
+    context.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, function (e) {
+      senders = senders.filter(function (id) { return id !== e.senderId; });
+    });
+
+    // ---- direct mode: raw <audio>, no CAF player ---------------------------
+
+    var audioEl = null;
+
+    function startDirect(url) {
+      if (!audioEl) {
+        audioEl = document.createElement('audio');
+        audioEl.autoplay = true;
+        // 'none' avoids any speculative pre-buffering before we ask to play.
+        audioEl.preload = 'none';
+        document.body.appendChild(audioEl);
+
+        ['loadstart', 'loadedmetadata', 'canplay', 'canplaythrough', 'playing',
+         'waiting', 'stalled', 'error'].forEach(function (ev) {
+          audioEl.addEventListener(ev, function () { mark('audio:' + ev); });
+        });
+        audioEl.addEventListener('timeupdate', function () {
+          if (audioEl.currentTime > 0) mark('audio:first-progress');
+        });
+      }
+      audioEl.src = url;
+      audioEl.load();
+      var p = audioEl.play();
+      if (p && p.catch) {
+        p.catch(function (err) {
+          log('direct play() rejected: ' + err);
+          report({ type: 'ERROR', detail: String(err) });
+        });
+      }
+    }
+
+    // ---- CAF player events -------------------------------------------------
+
+    var ev = cast.framework.events.EventType;
+
+    playerManager.addEventListener(ev.PLAYER_LOAD_COMPLETE, function () { mark('caf:load-complete'); });
+    playerManager.addEventListener(ev.PLAYING,              function () { mark('caf:playing'); });
+    playerManager.addEventListener(ev.BUFFERING,            function (e) {
+      mark(e.isBuffering ? 'caf:buffering-start' : 'caf:buffering-end');
+    });
+    playerManager.addEventListener(ev.ERROR, function (e) {
+      log('CAF error: ' + JSON.stringify(e.detailedErrorCode) + ' ' + e.reason);
+      report({ type: 'ERROR', detail: e.reason, code: e.detailedErrorCode });
+    });
+
+    // Ground truth for "audio is actually moving": the playhead advancing.
+    // CAF's PLAYING event fires on state transition, which was already shown
+    // to be an unreliable proxy for audible output on this hardware.
+    var progressTimer = setInterval(function () {
+      if (t0 === null) return;
+      var ct = playerManager.getCurrentTimeSec();
+      if (typeof ct === 'number' && ct > 0) mark('caf:first-progress');
+    }, 100);
+    window.addEventListener('unload', function () { clearInterval(progressTimer); });
+
+    // ---- LOAD interception -------------------------------------------------
+
+    playerManager.setMessageInterceptor(
+      cast.framework.messages.MessageType.LOAD,
+      function (request) {
+        t0 = performance.now();
+        marks = [];
+
+        var custom = request.customData || (request.media && request.media.customData) || {};
+        if (custom.mode) mode = custom.mode;
+
+        log('LOAD ' + (request.media && request.media.contentId) + ' mode=' + mode);
+        report({ type: 'LOAD', contentId: request.media && request.media.contentId });
+
+        // This is a continuous Icecast stream with no duration and no seekable
+        // range. Declaring it LIVE keeps CAF from trying to establish one.
+        request.media.streamType = cast.framework.messages.StreamType.LIVE;
+        request.media.contentType = request.media.contentType || 'audio/mpeg';
+        request.autoplay = true;
+        // Live: always start at the live edge, never at a stored position.
+        request.currentTime = null;
+
+        if (mode === 'direct') {
+          startDirect(request.media.contentId);
+          // Returning null cancels CAF's own load. disableIdleTimeout below
+          // keeps the receiver alive while nothing is loaded into its player.
+          return null;
+        }
+
+        return request;
+      }
+    );
+
+    // ---- buffering policy --------------------------------------------------
+
+    // These are the stock receiver's conservative live-buffering defaults
+    // turned as far down as the SDK allows. Note that several of these are
+    // only honoured by the adaptive (Shaka) pipeline; a progressive MP3 goes
+    // through the media element instead, which is what 'direct' mode exists
+    // to work around.
+    var playbackConfig = new cast.framework.PlaybackConfig();
+    playbackConfig.autoResumeDuration = 1;          // default 5
+    playbackConfig.autoResumeNumberOfSegments = 1;  // default 3
+    playbackConfig.autoPauseDuration = 0.5;         // default 3
+    playbackConfig.initialBandwidth = 192000;       // matches the 192k encoder
+    playbackConfig.segmentRequestRetryLimit = 1;
+
+    var options = new cast.framework.CastReceiverOptions();
+    options.playbackConfig = playbackConfig;
+    // Live stream that may sit silent for long stretches, plus 'direct' mode
+    // leaves CAF's own player idle by design. Both would otherwise be killed.
+    options.disableIdleTimeout = true;
+    options.maxInactivity = 3600;
+    options.customNamespaces = {};
+    options.customNamespaces[NS] = cast.framework.system.MessageType.JSON;
+
+    context.addCustomMessageListener(NS, function (e) {
+      var d = e.data || {};
+      if (d.type === 'SET_MODE' && d.mode) {
+        mode = d.mode;
+        log('mode set to ' + mode);
+      } else if (d.type === 'GET_MARKS') {
+        context.sendCustomMessage(NS, e.senderId, { type: 'MARKS', marks: marks, mode: mode });
+      }
+    });
+
+    context.addEventListener(cast.framework.system.EventType.READY, function () {
+      try {
+        var dbg = cast.debug.CastDebugLogger.getInstance();
+        dbg.setEnabled(true);
+        dbg.loggerLevelByEvents = {
+          'cast.framework.events.category.CORE': cast.framework.LoggerLevel.INFO
+        };
+      } catch (err) { /* debug layer unavailable */ }
+      log('receiver ready, default mode=' + mode);
+    });
+
+    context.start(options);
+  })();
+  </script>
+</body>
+</html>
