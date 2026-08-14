@@ -6,3 +6,7 @@ __pycache__/
 # Local handoff notes - contains the Icecast source password, keep out of the
 # public Pages repo.
 CONTEXT.md
+
+# Test rig runtime artefacts
+hls_test/web/
+hls_test/*.log
