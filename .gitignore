@@ -10,3 +10,6 @@ CONTEXT.md
 # Test rig runtime artefacts
 hls_test/web/
 hls_test/*.log
+
+# Local secret for the test rig
+hls_test/.icecast_pass

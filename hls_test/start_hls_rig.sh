@@ -26,6 +26,17 @@ WEB="${DIR}/web/aac"
 PORT=8099
 HOST_IP=192.168.7.1
 
+# Never hardcode the Icecast source password - this repo is public.
+# Put it in hls_test/.icecast_pass (gitignored), or export it before running.
+if [ -z "${ICECAST_SOURCE_PASSWORD:-}" ] && [ -f "${DIR}/.icecast_pass" ]; then
+  ICECAST_SOURCE_PASSWORD="$(tr -d '\r\n' < "${DIR}/.icecast_pass")"
+fi
+if [ -z "${ICECAST_SOURCE_PASSWORD:-}" ]; then
+  echo "ICECAST_SOURCE_PASSWORD is unset and ${DIR}/.icecast_pass is missing." >&2
+  echo "Set one before starting the MP3 leg." >&2
+  exit 1
+fi
+
 SRC='aevalsrc=0.4*sin(2*PI*1000*t)*lt(mod(t\,1)\,0.08):s=44100:c=stereo'
 
 mkdir -p "$WEB"
