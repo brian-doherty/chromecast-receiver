@@ -116,8 +116,15 @@
       mark(e.isBuffering ? 'caf:buffering-start' : 'caf:buffering-end');
     });
     playerManager.addEventListener(ev.ERROR, function (e) {
-      log('CAF error: ' + JSON.stringify(e.detailedErrorCode) + ' ' + e.reason);
-      report({ type: 'ERROR', detail: e.reason, code: e.detailedErrorCode });
+      // e.reason is frequently undefined; detailedErrorCode is the field that
+      // actually identifies the failure, so make sure it survives to the sender.
+      var detail = [
+        'code=' + e.detailedErrorCode,
+        'reason=' + e.reason,
+        'error=' + (e.error && JSON.stringify(e.error))
+      ].join(' ');
+      log('CAF error: ' + detail);
+      report({ type: 'ERROR', detail: detail, code: e.detailedErrorCode });
     });
 
     // Ground truth for "audio is actually moving": the playhead advancing.
@@ -138,7 +145,12 @@
         t0 = performance.now();
         marks = [];
 
-        var custom = request.customData || (request.media && request.media.customData) || {};
+        // pychromecast's media_info lands at request.media.customData, but
+        // request.customData is often present-and-empty - and {} is truthy, so
+        // a plain || chain stops there and never looks at the media object.
+        var reqCustom = request.customData || {};
+        var mediaCustom = (request.media && request.media.customData) || {};
+        var custom = reqCustom.mode ? reqCustom : mediaCustom;
         if (custom.mode) mode = custom.mode;
 
         log('LOAD ' + (request.media && request.media.contentId) + ' mode=' + mode);
