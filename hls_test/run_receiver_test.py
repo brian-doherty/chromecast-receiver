@@ -47,9 +47,11 @@ class TimingController(BaseController):
         return True
 
 
+# 'direct' first: it is the leg that matters and deserves fresh attention.
+# Stock last as an in-session control against rig drift.
 LEGS = [
-    ("custom / caf", CUSTOM_APP_ID, {"customData": {"mode": "caf"}}),
     ("custom / direct", CUSTOM_APP_ID, {"customData": {"mode": "direct"}}),
+    ("custom / caf", CUSTOM_APP_ID, {"customData": {"mode": "caf"}}),
     ("stock baseline", STOCK_APP_ID, None),
 ]
 

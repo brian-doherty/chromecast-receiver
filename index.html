@@ -23,11 +23,15 @@
     // Namespace the sender uses to receive timing reports back from us.
     var NS = 'urn:x-cast:me.dohertyfamily.cast';
 
-    // 'caf'    - let CAF's player handle the stream, with buffering tuned down.
     // 'direct' - bypass CAF's media pipeline, drive a raw <audio> element.
+    //            21s -> 6s ear-timed against the stock receiver.
+    // 'caf'    - CAF's player with playbackConfig tuned down. Kept only for
+    //            comparison: it fails outright with error 905 LOAD_FAILED on a
+    //            progressive Icecast MP3, because those settings govern the
+    //            adaptive pipeline that progressive content never enters.
     // Overridable per-request via customData.mode, or per-app via ?mode= in the
     // registered receiver URL.
-    var DEFAULT_MODE = 'caf';
+    var DEFAULT_MODE = 'direct';
 
     var params = new URLSearchParams(location.search);
     var mode = params.get('mode') || DEFAULT_MODE;
@@ -174,6 +178,39 @@
         return request;
       }
     );
+
+    // In direct mode CAF's own player holds nothing, so the sender's STOP and
+    // PAUSE never reach the audio we are actually playing. cast_arbitrator.py
+    // evicts a zone with media_controller.stop(), and Chromecast allows only
+    // one session per physical speaker - so without this, an evicted zone
+    // would keep playing and fight the zone that replaced it.
+    var msg = cast.framework.messages.MessageType;
+
+    playerManager.setMessageInterceptor(msg.STOP, function (request) {
+      if (audioEl) {
+        audioEl.pause();
+        audioEl.removeAttribute('src');
+        audioEl.load();
+        log('direct: stopped');
+      }
+      return request;
+    });
+
+    playerManager.setMessageInterceptor(msg.PAUSE, function (request) {
+      if (mode === 'direct' && audioEl) {
+        audioEl.pause();
+        log('direct: paused');
+      }
+      return request;
+    });
+
+    playerManager.setMessageInterceptor(msg.PLAY, function (request) {
+      if (mode === 'direct' && audioEl && audioEl.getAttribute('src')) {
+        audioEl.play();
+        log('direct: resumed');
+      }
+      return request;
+    });
 
     // ---- buffering policy --------------------------------------------------
 
