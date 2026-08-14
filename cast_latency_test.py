@@ -29,8 +29,8 @@ from pychromecast.controllers import BaseController
 NAMESPACE = "urn:x-cast:me.dohertyfamily.cast"
 STOCK_APP_ID = "CC1AD845"
 
-# Set once the receiver is registered in the Cast Developer Console.
-CUSTOM_APP_ID = os.environ.get("CAST_APP_ID", "")
+# Registered in the Cast Developer Console as an unpublished Custom Receiver.
+CUSTOM_APP_ID = os.environ.get("CAST_APP_ID", "95C13CF9")
 
 ZONES = {
     "backyard": "Backyard speaker",
